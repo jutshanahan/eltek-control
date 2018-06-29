@@ -1,13 +1,53 @@
-import socket, sys, struct, signal, codecs, subprocess, time
+import socket, sys, struct, signal, codecs, subprocess, time, threading 
+from time import sleep
 
 
-# https://endless-sphere.com/forums/viewtopic.php?f=14&t=71139
+# https://endless-sphere.com/forums/viewtopic.php?f=14&t=71139https://endless-sphere.com/forums/viewtopic.php?f=14&t=71139&sid=6dda9684374755f76d107f6698b01976&start=50
+
+
+# eltek SN :  163471014351
+
+
+class RepeatedTimer(object):
+	def __init__(self, interval, function, *args, **kwargs):
+		self._timer = None
+		self.interval = interval
+		self.function = function
+		self.args = args
+		self.kwargs = kwargs
+		self.is_running = False
+		self.next_call = time.time()
+		self.start()
+
+	def _run(self):
+		self.is_running = False
+		self.start()
+		self.function(*self.args, **self.kwargs)
+
+	def start(self):
+		if not self.is_running:
+			self.next_call += self.interval
+			self._timer = threading.Timer(self.next_call - time.time(), self._run)
+			self._timer.start()
+			self.is_running = True
+
+	def stop(self):
+		self._timer.cancel()
+		self.is_running = False
+		
+
+
+def hello(name):
+	print ("Hello %s!" % name)
 
 
 def signal_handler(signal, frame):
-	print(' you next time.')
-	sock.close()
-	sys.exit(0)
+	# print(' you next time.')
+	try:
+		set_vout_iout(float(input("voltage?  ")),float(input("current?  ")))
+	except:
+		sock.close()
+		sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
 sock = socket.socket(socket.PF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
@@ -44,8 +84,10 @@ startTime=time.time()
 
 def login():
 	cantxid =0x85004808
-	can_pkt=struct.pack(fmt,cantxid,8,b'\x16\x34\x71\x01\x43\x51\x00\x00')	
-	sock.send(can_pkt)
+	if eltekSN != 0:
+		# can_pkt=struct.pack(fmt,cantxid,8,b'\x16\x34\x71\x01\x43\x51\x00\x00')	
+		can_pkt=struct.pack(fmt,cantxid,8,eltekSN.to_bytes(6,'big',signed="False"))
+		sock.send(can_pkt)
 
 def mon_status(id,msg):
 	
@@ -53,14 +95,16 @@ def mon_status(id,msg):
 		# print ("msg=",msg)
 		tin,iout,vout,vin,tout = struct.unpack('<BhhhB',msg)
 		vout = vout/100.0
+		vpercell = round(vout/14,3)
 		iout = iout/10.0
+		iin = round(vout*iout/0.9/vin,1)
+		
+		if id == 0x85024004: mode = "CV"
+		if id == 0x85024008: mode = "CC"
 		
 		# print(tin,'=>',tout,'C','\t',vin,'AC =>',vout,'DC\r', end='\r', flush=True)
-		print(tin,'=>',tout,'C','\t',vin,'AC =>',vout,'VDC, ',iout,'ADC\t',vout*iout,'W')
-		
-		# ovH = (msg >> 8*3) & 0xFF
-		# ovL = (msg >> 8*4) & 0xFF
-		# print (ovH<<8+ovL,"V")
+		power = int(vout*iout)
+		print(('%dC->%dC' % (tin,tout)),'\t',vin,'VAC,',iin,'IAC =>',('%2.2f' % vout),'VDC, ',('(%1.3f V/cell)' % vpercell),('%2.2f' % iout),'A\t',mode,('%4d' % power),'W')
 		
 		# the status messages are (like described earlier in the thread) :
 		# 0x05014010 AA BB CC DD EE FF GG HH where 
@@ -81,16 +125,30 @@ def mon_status(id,msg):
 		print("id")
 		
 		
-def set_vout_iout(vout=50.0,iout=5.0,ovp=59.5):
+def set_vout_iout(vout,iout,ovp=59.5):
 
 	vout = int(vout * 100.0)
 	ovp = int(ovp * 100.0)
 	iout = int(iout * 10.0)
-	msg = struct.pack("<hhhh",iout,vout,vout,ovp)
-	print ("msg=",msg,len(msg))
-	can_pkt=struct.pack(fmt,0x85FF4004,8,msg)
-	# can_pkt=struct.pack(fmt,cantxid,8,b'\x16\x34\x71\x01\x43\x51\x00\x00')	
-	sock.send(can_pkt)
+	
+	perm = input("permanent [y/n]?  ")
+	if perm == 'y':
+		data = struct.pack("<BBBh",0x29,0x15,0x00,vout)
+		frame=struct.pack(fmt,0x85029C00,5,data)
+		sock.send(frame)
+		
+		# id 05 01 9C 00, dlc = 5, data = 29 15 00 <FE 10>
+
+	# 01=Rectifier Number 01
+	# FE 10 = 43.50 volts, same codage as already explained.
+		
+		
+	
+	data = struct.pack("<hhhh",iout,vout,vout,ovp)
+	frame=struct.pack(fmt,0x85FF4004,8,data)
+	
+	
+	sock.send(frame)
 
 # String for voltage setting : "send 05 FF 40 04 header and 8 bytes AA BB CC DD EE FF GG HH" 
 
@@ -104,61 +162,54 @@ def set_vout_iout(vout=50.0,iout=5.0,ovp=59.5):
 # FFEE (in HEX!) is the output voltage in centivolts (0.01V)
 # (I have set this at 80 16 for 57.6 Volt which is the highest voltage setting)
 
-
 # HHGG (in HEX!) is the overvoltage protection setting (I have set this at 3E 17 for 59.5 Volts)
 
 # So the complete string for setting the maximum voltage (57.6V) and maximum current is : 05 FF 40 04 header and 8 bytes A2 01 80 16 80 16 3E 17
 		
 print_status = False
 
-while 1:
 
-	login()
-	
-	print ("1. log in")
-	print ("2. monitor status")
-	print ("3. set voltage/current")
-	
-	choice = int(input("?  "))
-	
-	if choice == 1:
-		# login = True
-		pass
-		
-	if choice == 2:
-		print_status = True
-		
-	if choice == 3:
+rt = RepeatedTimer(5, login) # it auto-starts, no need of rt.start()
+choice=0
+
+eltekSN = 0
+
+try:
+	while 1:
+
+		try:
+			canid,canlen,candata=struct.unpack(fmt,sock.recv(16))
+			# canid = canid & 0x7fffffff
 			
-		set_vout_iout(float(input("voltage?  ")),float(input("current?  ")))
-		
+			if ((canid & 0xFFFF000) == 0x5000000) and eltekSN==0:
+			# if canid == 0x85024400:
+				eltekSN = (int.from_bytes(candata, 'big') >> 8) & 0xFFFFFFFFFFFF
+				print("eltekSN",hex(eltekSN))
+			
+			# if print_status == True:
+			
+			if eltekSN != 0:
+				mon_status(canid,candata)
+			
+			 # can0  05024004   [8]  15 00 00 F0 14 76 00 23
+			
+			# print ("og cd=",ogcandata)
+
+			
+			# candata = int.from_bytes(candata, 'big', signed=True)
+			# candata = struct.unpack(">L", candata)[0]
+			# candata=struct.unpack("<L", candata)[0]
+			
+			
+
+			# print ("socket.CAN_EFF_FLAG=",socket.CAN_EFF_FLAG)
+			# cantxid =0x4808 | socket.CAN_EFF_FLAG
+			# if login == True:
+			
+
+		except OSError as err:
+			print("OS error: {0}".format(err))
 
 
-	try:
-		canid,canlen,candata=struct.unpack(fmt,sock.recv(16))
-		# canid = canid & 0x7fffffff
-		canid = canid
-		
-		
-		if print_status == True:
-			mon_status(canid,candata)
-		
-		 # can0  05024004   [8]  15 00 00 F0 14 76 00 23
-		
-		# print ("og cd=",ogcandata)
-		
-		# candata = int.from_bytes(candata, 'big', signed=True)
-		candata = int.from_bytes(candata, 'big')
-		# candata = struct.unpack(">L", candata)[0]
-		# candata=struct.unpack("<L", candata)[0]
-		
-		# candata = candata.hex()
-		
-
-		# print ("socket.CAN_EFF_FLAG=",socket.CAN_EFF_FLAG)
-		# cantxid =0x4808 | socket.CAN_EFF_FLAG
-		# if login == True:
-		
-
-	except OSError as err:
-		print("OS error: {0}".format(err))
+finally:
+	rt.stop() # better in a try/finally block to make sure the program ends!
