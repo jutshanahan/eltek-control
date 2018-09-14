@@ -1,6 +1,11 @@
 import socket, sys, struct, signal, codecs, subprocess, time, threading 
 from time import sleep
 
+#/etc/network/interfaces
+	#allow-hotplug can0
+	#iface can0 can static
+	#        bitrate 125000
+	#        up ip link set $IFACE txqueuelen 1000
 
 # https://endless-sphere.com/forums/viewtopic.php?f=14&t=71139https://endless-sphere.com/forums/viewtopic.php?f=14&t=71139&sid=6dda9684374755f76d107f6698b01976&start=50
 
